@@ -154,7 +154,7 @@ def _sg_to_ay_dict(
         ay_entity_type = "version"
         name = slugify_string(sg_entity["code"], min_length=0)
         label = sg_entity["code"]
-    elif sg_entity["type"] == "Note":
+    elif sg_entity["type"] in ["Note", "Reply"]:
         ay_entity_type = "comment"
         content = sg_entity["content"] or ""
         name = slugify_string(content, min_length=0)
@@ -1665,7 +1665,7 @@ def get_sg_user_id(ayon_username: str) -> [int]:
 def handle_comment(sg_ay_dict, sg_session, entity_hub):
     """Transforms content and links from SG to matching AYON structures."""
     sg_note_id = sg_ay_dict["attribs"][SHOTGRID_ID_ATTRIB]
-    sg_note, sg_note_id = _get_sg_note(sg_note_id, sg_session)
+    sg_note, sg_note_id = _get_sg_note(sg_note_id, sg_session, "Note")
 
     if not sg_note:
         log.warning(f"Couldn't find note '{sg_note_id}'")
@@ -1714,6 +1714,53 @@ def handle_comment(sg_ay_dict, sg_session, entity_hub):
             CUST_FIELD_CODE_ID: ay_activity_id
         }
     )
+
+def handle_reply(sg_ay_dict, sg_session, entity_hub):
+    sg_note_id = sg_ay_dict["attribs"][SHOTGRID_ID_ATTRIB]
+    sg_reply, sg_reply_id = _get_sg_note(sg_note_id, sg_session, "Reply")
+    parent_note, parent_note_id = _get_sg_note(sg_reply["entity"]["id"], sg_session, "Note")
+    ay_parent_entity = _get_sg_note_parent_entity(entity_hub, parent_note, sg_session)
+
+    log.debug(f"{sg_reply = }")
+    log.debug(f"{parent_note = }")
+
+    # build the content citing the parent note
+    content = f"> {parent_note['content']}\n\n{sg_reply['content']}"
+
+    project_name = entity_hub.project_name
+    ayon_user_name = _get_ayon_user_name(sg_reply["user"])
+
+    sg_ayon_id = sg_reply["cached_display_name"].replace(" ", "") # reverse logic, search sgid in ayon and not the other way round
+    ayon_comment = None
+    if sg_ayon_id:
+        try:
+            ayon_comment = ayon_api.get_activity_by_id(project_name, sg_ayon_id)
+        except Exception:
+            log.warning(f"Couldn't find AYON comment with id '{sg_ayon_id}'")
+    if not ayon_comment:
+        ay_activity_id = _add_comment(
+            sg_session,
+            project_name,
+            ay_parent_entity["id"],
+            ay_parent_entity["entity_type"],
+            ayon_user_name,
+            content,
+            sg_reply,
+        )
+    else:
+        # i'll never end up here if i can't persist ayon_id on the sg_reply
+        log.debug("Updating reply isn't implemented yet")
+
+    # update SG with AYON comment id
+    sg_session.update(
+        "Reply",
+        int(sg_reply_id),
+        {
+            "cached_display_name": ay_activity_id
+        }
+    )
+    sg_reply, sg_reply_id = _get_sg_note(sg_note_id, sg_session, "Reply")
+    log.debug(f"AFTER UPDATE: {sg_reply = }")
 
 
 def _update_comment(
@@ -1786,20 +1833,15 @@ def _update_comment(
     return ay_activity_id
 
 
-def _get_sg_note(sg_note_id, sg_session):
-    """Gets detail information about SG note wih SG id."""
+def _get_sg_note(sg_note_id, sg_session, sg_comment_type):
+    """Gets detail information about SG note/reply wih SG id."""
+    schema = sg_session.schema_field_read(sg_comment_type)
+    all_fields = list(schema.keys())
+    log.debug(f"{all_fields = }")
     sg_note = sg_session.find_one(
-        "Note",
+        sg_comment_type,
         [["id", "is", int(sg_note_id)]],
-        fields=[
-            "id",
-            "content",
-            "sg_ayon_id",
-            "user",
-            "note_links",
-            "addressings_to",
-            "attachments"
-        ]
+        fields=all_fields
     )
     return sg_note, sg_note_id
 
@@ -1879,7 +1921,7 @@ def _get_sg_note_parent_entity(entity_hub, sg_note, sg_session):
 def _get_content_with_notifications(sg_note):
     """Translates SG 'addressings_to' to AYON @ mentions."""
     content = sg_note["content"]
-    for sg_user in sg_note["addressings_to"]:
+    for sg_user in sg_note.get("addressings_to", []):
         if sg_user["type"] != "HumanUser":
             log.warning(f"Cannot create notes for non humans "
                         f"- {sg_user['type']}")
