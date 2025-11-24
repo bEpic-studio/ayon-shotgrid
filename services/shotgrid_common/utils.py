@@ -787,6 +787,8 @@ def get_sg_entities(
     for sg_attrib in custom_attribs_map.values():
         query_fields.extend([f"sg_{sg_attrib}", sg_attrib])
 
+    log.debug(f"{query_fields = }")
+
     project_enabled_entities = get_sg_project_enabled_entities(
         sg_session,
         sg_project,
@@ -811,6 +813,9 @@ def get_sg_entities(
 
     for enabled_entity in project_enabled_entities:
         entity_name, parent_field = enabled_entity
+        if entity_name == "Reply":
+            log.info("Skipping Reply entity as it's handled with Notes.")
+            continue
 
         sg_entities = sg_session.find(
             entity_name,
