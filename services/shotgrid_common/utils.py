@@ -1949,22 +1949,33 @@ def _get_content_with_notifications(sg_note):
 
 
 def _handle_attachment(sg_session, attachment, project_name):
-    # download SG attachment local temprarily
-    tmp_dir = tempfile.mkdtemp() # these will stay but nevermind
-    tmp_file = os.path.join(tmp_dir, attachment["name"])
-    local_path = sg_session.download_attachment(
-        attachment, file_path=tmp_file
-    )
-    if not local_path or not os.path.exists(local_path):
-        log.debug(f"Failed to download SG attachment: {attachment}")
-        return
-    mime_type, _ = mimetypes.guess_type(local_path)
+    def __temp_download_from_sg(attachment):
+        # download SG attachment local temporarily
+        tmp_dir = tempfile.mkdtemp() # these will stay but nevermind
+        tmp_file = os.path.join(tmp_dir, attachment["name"])
+        local_path = sg_session.download_attachment(
+            attachment, file_path=tmp_file
+        )
+        if not local_path or not os.path.exists(local_path):
+            log.debug(f"Failed to download SG attachment: {attachment}")
+            return
+        mime_type, _ = mimetypes.guess_type(local_path)
 
+        return (local_path, mime_type)
+
+
+    local_path, mime_type = __temp_download_from_sg(attachment)
+    if mime_type == "text/html":
+        # SG sometimes serves HTML page instead of the real file
+        log.debug("SG attachment seems to be an HTML page. Retrying.")
+        os.remove(local_path)
+        local_path, mime_type = __temp_download_from_sg(attachment)
     # upload to AYON
     headers = {
         "Content-Type": mime_type,
         "x-file-name": os.path.basename(local_path),
     }
+    log.debug(f"Uploading file to AYON with {headers = }")
     resp = ayon_api.upload_file(
         endpoint=f"projects/{project_name}/files",
         filepath=local_path,
